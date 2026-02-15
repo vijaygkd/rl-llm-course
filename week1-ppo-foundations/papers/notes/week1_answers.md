@@ -1,15 +1,24 @@
 ## Discussion Question Answers
 
-**1. Why do we need two networks (Policy and Value) for PPO? What is the specific job of the Value network during the "Update" phase?**
-- The role of the Policy network is to take actions given state where as the role of the Value network is to predict future reward given the state and action.
-- During the "update" phase, the Value network outputs are used to calcuate "advantage" for the actions.
-- Not sure, how it is trained (what's the target value) and what GAE represents. 
+### 1. Why do we need two networks (Policy and Value) for PPO? What is the specific job of the Value network during the "Update" phase?
+* The role of the Policy network is to take actions given state where as the role of the Value network is to predict future reward given the state and action.
+* During the "update" phase, the Value network outputs are used to calcuate "advantage" for the actions.
+* The Missing Technical Detail:
+  * How is the Value Network trained?
+    * It is a regression problem.Target: The "Discounted Return" ($R_t$). This is the sum of actual rewards the agent got from that state onwards: $R_t = r_t + \gamma r_{t+1} + \gamma^2 r_{t+2} + \dots$
+    * Loss: Mean Squared Error (MSE) between the prediction $V(s_t)$ and the actual target $R_t$.
+  * What is GAE?It stands for Generalized Advantage Estimation.It’s a clever trick to balance "bias" (trusting your Value network's guess) and "variance" (trusting the noisy actual rewards). It calculates the Advantage $\hat{A}_t$ by mixing short-term reality with long-term predictions. You will implement the GAE formula directly from the paper (Eq 11 & 12). 
 
-**2. In the PPO clipping equation, what happens to the gradient if the Advantage is positive (A > 0) but the ratio is greater than 1 + ep? Why is this behavior desirable?**
-- The clipping of the probability ratio prevents significant policy updates, thereby preventing it from deviating too far from its original state.
-- When A > 0, the clipping function establishes an upper bound on the ratio at `1 + ep`, preventing accidental deviations to a larger value beyond this threshold.
-- Similarly, when A < 0, the ratio is clipped to `1 - ep`, which prevents excessive penalties for policy mistakes.
-- This approach facilitates smoother policy learning and prevents erratic behavior due to large updates, leading to more stable policy convergence.
+### 2. In the PPO clipping equation, what happens to the gradient if the Advantage is positive ($A > 0$) but the ratio is greater than $1 + \epsilon$? Why is this behavior desirable?
 
-**3. How is the "Reward" in CartPole (usually +1 for staying alive) different from the "Reward" in an LLM (usually a preference score)? How does this change the difficulty of the problem?**
+* The clipping of the probability ratio helps **ignore significant policy updates**, thereby preventing the model from deviating too far from its original policy.
+* When $A > 0$ (a "good" action) and the ratio is large, the clipping function caps the ratio at $1 + \epsilon$.
+* Consequently, the objective function becomes
+  * $L = (1+\epsilon) \cdot A$.
+  * Since this term is a constant with respect to the policy parameters, the **gradient becomes 0**.
+* As a result, the algorithm effectively **ignores** this specific sample for the update, preventing a massive shift in weights.
+* Similarly, when $A < 0$ (a "bad" action), the ratio is clipped to $1 - \epsilon$. This prevents the algorithm from crushing the probability of an action to zero too quickly based on a single bad run.
+* **Intuitively:** PPO is "pessimistic." It ignores large "optimistic" steps (large gains) but allows large "pessimistic" steps (correcting errors). This asymmetry leads to smoother, more stable convergence.
+
+### 3. How is the "Reward" in CartPole (usually +1 for staying alive) different from the "Reward" in an LLM (usually a preference score)? How does this change the difficulty of the problem?
 - TBD
