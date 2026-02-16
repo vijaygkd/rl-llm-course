@@ -32,28 +32,31 @@ PPO is an *on-policy* algorithm. You need to collect a batch of data using your 
 
 * **Collection:** Run the agent in the environment for a fixed number of steps (e.g., 2048).
 * **Store:** `states`, `actions`, `log_probs`, `rewards`, `is_terminals`, and `values`.
-* *Why store log_probs?* You need the probability of the action *at the time it was taken* to calculate the ratio  later.
+* *Why store log_probs?* You need the probability of the action *at the time it was taken* to calculate the ratio $r_t(\theta)$ later.
 
 ### Step 3: Generalized Advantage Estimation (GAE)
+You cannot just use raw rewards. You need to calculate **Advantages** ($\hat{A}_t$) to reduce variance.
 
-You cannot just use raw rewards. You need to calculate **Advantages** () to reduce variance.
-
-* Implement the GAE formula:
-
-
-
-Where  (The TD Error).
-* *Hyperparams:* , .
+* **Implement the GAE formula:**
+    $$A_t = \delta_t + (\gamma \lambda) A_{t+1}$$
+    Where $\delta_t = r_t + \gamma V(s_{t+1}) - V(s_t)$ (The TD Error).
+* **Hyperparameters:**
+    * $\gamma = 0.99$ (Discount factor)
+    * $\lambda = 0.95$ (GAE smoothing parameter)
 
 ### Step 4: The PPO Loss (The Core)
-
 Implement the "Clipped Surrogate Objective" in your update loop.
 
-1. **Calculate Ratio:** 
-2. **Calculate Surrogate 1:** 
-3. **Calculate Surrogate 2:** 
-4. **Final Actor Loss:** .mean()
-5. **Critic Loss:** MSE between `new_values` and `returns` (where returns = ).
+1.  **Calculate Ratio:**
+    $$r_t(\theta) = \frac{\pi_{new}(a|s)}{\pi_{old}(a|s)} = \exp(\log\pi_{new} - \log\pi_{old})$$
+2.  **Calculate Surrogate 1:**
+    $$\text{Surr}_1 = r_t \cdot A_t$$
+3.  **Calculate Surrogate 2:**
+    $$\text{Surr}_2 = \text{clamp}(r_t, 1-\epsilon, 1+\epsilon) \cdot A_t$$
+4.  **Final Actor Loss:**
+    $$\mathcal{L}_{CLIP} = -\min(\text{Surr}_1, \text{Surr}_2).\text{mean}()$$
+5.  **Critic Loss:**
+    MSE between `new_values` and `returns` (where `returns` = $A_t + V_{old}$).
 
 ## 4. Suggested File Structure
 

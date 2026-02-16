@@ -1,0 +1,9 @@
+# Local uv / Python environment files
+.venv/
+uv.lock
+pyproject.toml
+.python-version
+
+# Python cache files
+__pycache__/
+*.pyc
