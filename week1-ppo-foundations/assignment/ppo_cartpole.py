@@ -5,7 +5,7 @@ import torch.optim as optim
 import numpy as np
 from tqdm import trange
 
-from utils import plot_learning_curve
+from utils import plot_learning_curve, save_run_metrics
 
 # 1. The Hyperparameters (Start with these)
 LR = 3e-4
@@ -198,10 +198,11 @@ class PPOAgent:
 
 
 # 4. Main Training Loop
-def train(mode=None):
+def train(mode=None, run_name=""):
     env = gym.make("CartPole-v1", render_mode=mode)
     agent = PPOAgent(env)
     eval_avg_history = []
+    eval_rewards_history = []
     update_idx = []
 
     # train loop
@@ -212,11 +213,14 @@ def train(mode=None):
         # evalute agent and log avg reward per episode
         eval_rewards = evaluate(agent, epochs=EVAL_RUNS_PER_UPDATE)
         eval_avg = float(np.mean(eval_rewards))
+        eval_rewards_history.append(eval_rewards)
         eval_avg_history.append(eval_avg)
         update_idx.append(i + 1)
         print(f"Update {i + 1}: avg reward over {EVAL_RUNS_PER_UPDATE} eval runs = {eval_avg:.2f}")
 
-    plot_learning_curve(update_idx, eval_avg_history, EVAL_RUNS_PER_UPDATE)
+    # logging
+    plot_learning_curve(update_idx, eval_avg_history, EVAL_RUNS_PER_UPDATE, run_name=run_name)
+    save_run_metrics(run_name, update_idx, eval_avg_history, eval_rewards_history)
 
     return agent
 
@@ -240,8 +244,9 @@ def evaluate(agent, mode=None, epochs=10):
 
 
 if __name__ == "__main__":
-    print("Train PPO agent...")
-    agent = train(mode=None)
+    exp_name = "PPO full"
+    print(f"Train PPO agent -> {exp_name}")
+    agent = train(mode=None, run_name=exp_name)
 
-    print("PPO Final agent eval...")
+    print(f"PPO Final agent eval -> {exp_name}")
     evaluate(agent, mode=None, epochs=100)
