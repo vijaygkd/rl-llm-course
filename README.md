@@ -1,2 +1,4 @@
 # rl-llm-course
-RL for LLM self-study course taught by Gemini
+RL for LLM post-training self-taught course guided by Gemini
+
+look [COURSE.MD](COURSE.md) for details
