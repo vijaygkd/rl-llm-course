@@ -11,10 +11,11 @@ LR = 3e-4
 DISCOUNT = 0.99
 GAE_PARAM = 0.95
 EPS_CLIP = 0.2
-EPOCHS = 10        # How many times to reuse the dataset
-BATCH_SIZE = 64    # Mini-batch size
-ROLLOUT_LEN = 2048 # How much data to collect before updating
-NUM_STEP = 1    # No. of policy updates 
+EPOCHS = 10             # How many times to reuse the dataset
+BATCH_SIZE = 64         # Mini-batch size
+ROLLOUT_LEN = 2048      # How much data to collect before updating
+NUM_UPDATES = 50        # No. of policy update loops
+# total timesteps = rollout len * num_updates = 100K (enough for cart-pole)
 DEVICE = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
 
 
@@ -57,6 +58,13 @@ class ActorCritic(nn.Module):
         # 4. Return action and its log_prob
         return action, log_prob
 
+    def get_log_prob(self, state, action):
+        # Get log_prob given state for specific action
+        logits = self.actor(state)  # (, 2)
+        dist = torch.distributions.Categorical(logits=logits)
+        log_prob = dist.log_prob(action)
+        return log_prob
+    
     def get_value(self, state):
         value = self.critic(state)
         return value
@@ -70,21 +78,26 @@ class PPOAgent:
         self.buffer = [] # Store your rollouts here
 
     def collect_rollout(self):
+        """
+        Use "old" / "current" policy to sample fresh data for training. 
+        On-policy learning.
+        """
+        self.buffer = []
         state, info = self.env.reset()
         episode_reward = 0
         for i in range(ROLLOUT_LEN):
-            # agent acts
-            action, log_prob, value = self.policy(torch.Tensor(state).to(DEVICE))
+            with torch.no_grad():
+                # Note: training data is constant, even though generated with policy. 
+                # So no_grad applied. (hard bug to catch)
+                action, log_prob, value = self.policy(torch.Tensor(state).to(DEVICE))
             new_state, reward, done, truncated, info = self.env.step(action.item())
             self.buffer.append(
-                (state, new_state, action, log_prob, value, reward, done)
+                (state, new_state, action.detach(), log_prob.detach(), value.detach(), reward, done)
             )
             state = new_state
             episode_reward += reward
-            
             if done or truncated:
                 state, info = self.env.reset()
-                print(f"Episode reward: {episode_reward}")
                 episode_reward = 0
     
     def compute_gae(self):
@@ -95,14 +108,13 @@ class PPOAgent:
         gae = 0
         future_reward = 0
         value_next = 0
-
         # init last timestamp if not done
         last_done = self.buffer[-1][6]
         if not last_done:
             # end of buffer is not done state, so we "assume" future values using value model
             next_state = self.buffer[-1][1]
             value_next = self.policy.get_value(torch.Tensor(next_state).to(DEVICE)).item()
-            future_reward = value_next      # assume future_reward is value. TODO verify???
+            future_reward = value_next      # target for critic training. TODO verify if right approach???
 
         for i in reversed(range(len(self.buffer))): # start reversed
             b = self.buffer[i]
@@ -124,34 +136,54 @@ class PPOAgent:
         future_rewards_buffer.reverse()
         return gae_buffer, future_rewards_buffer
 
+    def _iter_minibatches(self, dataset, batch_size):
+        total_size = dataset["states"].shape[0]
+        indices = torch.randperm(total_size, device=DEVICE)
+        for start in range(0, total_size, batch_size):
+            end = min(start + batch_size, total_size)
+            batch_idx = indices[start:end]
+            yield {key: value[batch_idx] for key, value in dataset.items()}
+
+    def _build_dataset(self):
+        advantages, future_rewards = self.compute_gae()
+        return {
+            "states": torch.tensor(
+                np.array([b[0] for b in self.buffer]), dtype=torch.float32, device=DEVICE
+            ),
+            "actions": torch.stack([b[2] for b in self.buffer]).to(DEVICE),
+            "log_prob": torch.stack([b[3] for b in self.buffer]).to(DEVICE).detach(),
+            "advantage": torch.tensor(
+                [a.item() if torch.is_tensor(a) else a for a in advantages],
+                dtype=torch.float32,
+                device=DEVICE,
+            ),
+            "future_rewards": torch.tensor(
+                [r.item() if torch.is_tensor(r) else r for r in future_rewards],
+                dtype=torch.float32,
+                device=DEVICE,
+            ),
+        }
 
     def update(self):
         """
         Learning loop / backprop
         """
-        num_batches = len(self.buffer) / BATCH_SIZE
-        
-        # dataset prep
-        advantages, future_rewards = self.compute_gae()
-        states = torch.Tensor(self.bu)
+        dataset = self._build_dataset()     # rollouts, GAE, rewards, etc.
 
+        # TRAINING LOOP
         for i in range(EPOCHS):
-            # TODO batching, shuffling of data
-            # shuffle dataset for backprop
-
-            for j in range(num_batches):
+            for batch in self._iter_minibatches(dataset, BATCH_SIZE):
                 self.optimizer.zero_grad()
-                # sample batch
-                batch = self.buffer[j*BATCH_SIZE: (j+1)*BATCH_SIZE]
                 adv = batch['advantage']
                 states = batch['states']
+                actions = batch['actions']
                 log_prob_old = batch['log_prob']              # from old policy rollouts
                 future_rewards = batch['future_rewards']
 
-                # <SELF-LEARNING: AI do not edit below>
-                # online-policy update (get log_prob, values from latest policy)
-                log_prob_new = self.policy.get_action(states) 
-                values_new = self.policy.get_value(states)     
+                # on-policy update (sample log_probs, values from latest policy for past actions)
+                log_prob_new = self.policy.get_log_prob(states, actions) # (, 1)
+                values_new = self.policy.get_value(states)  
+                # PPO
                 ratio = torch.exp(
                     log_prob_new - log_prob_old
                 )
@@ -164,9 +196,9 @@ class PPOAgent:
                 # MSE
                 critic_loss = torch.square(values_new - future_rewards).mean()
                 # combined loss to backprop both actor and critic
-                loss = actor_loss + critic_loss
+                loss = actor_loss + critic_loss 
                 loss.backward()
-
+                self.optimizer.step()
 
 
 # 4. Main Training Loop
@@ -175,10 +207,13 @@ def train(mode=None):
     agent = PPOAgent(env)
 
     # train loop
-    for i in range(NUM_STEP): # Number of updates
+    for i in trange(NUM_UPDATES, desc="Update loop", unit="epoch"): # Number of updates
         agent.collect_rollout()
         agent.update()
         # TODO: Log average reward to see if it's learning!
+        evaluate(agent)
+
+    return agent
 
 
 def evaluate(agent, mode=None):
@@ -201,8 +236,8 @@ def evaluate(agent, mode=None):
 
 
 if __name__ == "__main__":
-    # train(mode="human")
-    print("Random agent eval...")
-    env = gym.make("CartPole-v1")
-    agent = PPOAgent(env=env)
+    print("Train PPO agent...")
+    agent = train(mode=None)
+
+    print("PPO Final agent eval...")
     evaluate(agent, mode="human")
