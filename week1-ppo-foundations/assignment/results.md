@@ -7,7 +7,7 @@ This file tracks evaluation results over 100 consecutive episodes for different 
 | Agent | Training Status | Eval Episodes | Average Reward |
 | --- | --- | --- | --- |
 | Random Agent | Untrained (init model, no training) | 100 | 20.5 |
-| PPO Agent | Critic trained with Monte Carlo return (sum of future rewards) | 100 | 168.05 |
+| PPO basic | Critic trained with Monte Carlo return (sum of future rewards) | 100 | 168.05 |
 | PPO Full | With training optimization | 100 | 472.77 |
 | PPO Unclipped | Unclipped loss | 100 | 500 |
 
