@@ -1,10 +1,11 @@
 import gymnasium as gym
-from sympy.strategies.traverse import do_one
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 from tqdm import trange
+
+from utils import plot_learning_curve
 
 # 1. The Hyperparameters (Start with these)
 LR = 3e-4
@@ -16,6 +17,7 @@ BATCH_SIZE = 64         # Mini-batch size
 ROLLOUT_LEN = 2048      # How much data to collect before updating
 NUM_UPDATES = 50        # No. of policy update loops
 # total timesteps = rollout len * num_updates = 100K (enough for cart-pole)
+EVAL_RUNS_PER_UPDATE = 10
 DEVICE = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
 
 
@@ -166,17 +168,16 @@ class PPOAgent:
                 states = batch['states']
                 actions = batch['actions']
                 log_prob_old = batch['log_prob']              # from old policy rollouts
-                values_old = batch['values']
-                future_rewards = batch['future_rewards']
+                values_old = batch['values'].flatten() # (b)
 
                 # on-policy update (sample log_probs, values from latest policy for past actions)
                 # gradients flow through these tensors from new policy
                 log_prob_new = self.policy.get_log_prob(states, actions) # (, 1)
-                values_new = self.policy.get_value(states)  
+                values_new = self.policy.get_value(states).flatten()  # (b)
                 
                 # value target = old baseline + how much was discounted TD error based on rewards
                 # Alternative, sub-optimal way is to use sum actual future rewards, but it has high variance.
-                values_target = values_old + adv     # ** Target for critic model. 
+                values_target = values_old + adv     # ** Target for critic model. (b)
 
                 # PPO
                 ratio = torch.exp(
@@ -200,33 +201,41 @@ class PPOAgent:
 def train(mode=None):
     env = gym.make("CartPole-v1", render_mode=mode)
     agent = PPOAgent(env)
+    eval_avg_history = []
+    update_idx = []
 
     # train loop
     for i in trange(NUM_UPDATES, desc="Update loop", unit="epoch"): # Number of updates
         agent.collect_rollout()
         agent.update()
-        # TODO: Log average reward to see if it's learning!
-        evaluate(agent)
+
+        # evalute agent and log avg reward per episode
+        eval_rewards = evaluate(agent, epochs=EVAL_RUNS_PER_UPDATE)
+        eval_avg = float(np.mean(eval_rewards))
+        eval_avg_history.append(eval_avg)
+        update_idx.append(i + 1)
+        print(f"Update {i + 1}: avg reward over {EVAL_RUNS_PER_UPDATE} eval runs = {eval_avg:.2f}")
+
+    plot_learning_curve(update_idx, eval_avg_history, EVAL_RUNS_PER_UPDATE)
 
     return agent
 
 
-def evaluate(agent, mode=None):
-    EVAL_EPISODES = 100
+def evaluate(agent, mode=None, epochs=10):
     env = gym.make("CartPole-v1", render_mode=mode)
     episode_rewards = []
-    for i in trange(EVAL_EPISODES, desc="Evaluating", unit="episode"):
+    for i in trange(epochs, desc="Evaluating", unit="episode"):
         state, info = env.reset()
         episode_reward = 0
         for j in range(ROLLOUT_LEN):
-            action, log_prob, value = agent.policy(torch.Tensor(state).to(DEVICE))
+            with torch.no_grad():
+                action, log_prob, value = agent.policy(torch.Tensor(state).to(DEVICE))
             state, reward, done, truncated, info = env.step(action.item())
             episode_reward += reward
             if done or truncated:
                 break
         episode_rewards.append(episode_reward)
     env.close()
-    print(f"Average reward for {EVAL_EPISODES} episodes: {sum(episode_rewards) / EVAL_EPISODES}")
     return episode_rewards
 
 
@@ -235,4 +244,4 @@ if __name__ == "__main__":
     agent = train(mode=None)
 
     print("PPO Final agent eval...")
-    evaluate(agent, mode="human")
+    evaluate(agent, mode=None, epochs=100)

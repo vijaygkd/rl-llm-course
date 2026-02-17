@@ -2,3 +2,4 @@ gymnasium[classic-control]
 numpy
 torch
 tqdm
+matplotlib
