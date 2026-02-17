@@ -231,7 +231,7 @@ def train(mode=None, run_name=""):
 def evaluate(agent, mode=None, epochs=10):
     env = gym.make("CartPole-v1", render_mode=mode)
     episode_rewards = []
-    for i in trange(epochs, desc="Evaluating", unit="episode"):
+    for i in range(epochs):
         state, info = env.reset()
         episode_reward = 0
         for j in range(ROLLOUT_LEN):
@@ -245,11 +245,11 @@ def evaluate(agent, mode=None, epochs=10):
     env.close()
     return episode_rewards
 
-
 if __name__ == "__main__":
     exp_name = "PPO full"
     print(f"Train PPO agent -> {exp_name}")
     agent = train(mode=None, run_name=exp_name)
 
     print(f"PPO Final agent eval -> {exp_name}")
-    evaluate(agent, mode=None, epochs=100)
+    results = evaluate(agent, mode=None, epochs=100)
+    print(f"Average eval reward over 100 episodes: {sum(results) / len(results)}")
