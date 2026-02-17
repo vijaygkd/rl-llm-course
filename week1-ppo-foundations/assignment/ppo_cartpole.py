@@ -12,6 +12,8 @@ LR = 3e-4
 DISCOUNT = 0.99
 GAE_PARAM = 0.95
 EPS_CLIP = 0.2
+VF_COEF = 1
+ENTROPY_COEF = 0.01
 EPOCHS = 10             # How many times to reuse the dataset
 BATCH_SIZE = 64         # Mini-batch size
 ROLLOUT_LEN = 2048      # How much data to collect before updating
@@ -60,12 +62,11 @@ class ActorCritic(nn.Module):
         # 4. Return action and its log_prob
         return action, log_prob
 
-    def get_log_prob(self, state, action):
-        # Get log_prob given state for specific action
+    def get_log_prob_entropy(self, state, action):
         logits = self.actor(state)  # (, 2)
         dist = torch.distributions.Categorical(logits=logits)
         log_prob = dist.log_prob(action)
-        return log_prob
+        return log_prob, dist.entropy()
     
     def get_value(self, state):
         value = self.critic(state)
@@ -172,7 +173,7 @@ class PPOAgent:
 
                 # on-policy update (sample log_probs, values from latest policy for past actions)
                 # gradients flow through these tensors from new policy
-                log_prob_new = self.policy.get_log_prob(states, actions) # (, 1)
+                log_prob_new, entropy = self.policy.get_log_prob_entropy(states, actions) # (, 1)
                 values_new = self.policy.get_value(states).flatten()  # (b)
                 
                 # value target = old baseline + how much was discounted TD error based on rewards
@@ -180,20 +181,22 @@ class PPOAgent:
                 values_target = values_old + adv     # ** Target for critic model. (b)
 
                 # PPO
+                norm_adv = (adv - adv.mean()) / (adv.std() + 1e-8)
                 ratio = torch.exp(
                     log_prob_new - log_prob_old
                 )
-                unclipped = ratio * adv
+                unclipped = ratio * norm_adv
                 clipped = torch.clip(
                     ratio, 1 - EPS_CLIP, 1 + EPS_CLIP
-                ) * adv
+                ) * norm_adv
                 # clipped surrogate loss -- PPO loss
                 actor_loss = - torch.min(unclipped, clipped).mean()
                 # MSE
                 critic_loss = torch.square(values_new - values_target).mean()
-                # combined loss to backprop both actor and critic
-                loss = actor_loss + critic_loss 
+                # combined losses with entropy bonus to allow exploration
+                loss = actor_loss + VF_COEF * critic_loss - ENTROPY_COEF * entropy.mean()
                 loss.backward()
+                nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=0.5) # gradient clipping
                 self.optimizer.step()
 
 
