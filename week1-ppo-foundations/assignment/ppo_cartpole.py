@@ -103,38 +103,30 @@ class PPOAgent:
     def compute_gae(self):
         # Calculate GAE calculation for all timestep in rollout
         # Lookahead till end of episode or end of buffer recursively
-        gae_buffer = []                # gae for last timestep in buffer, since we can't see future
-        future_rewards_buffer = []
+        gae_buffer = []                 # gae for last timestep in buffer, since we can't see future
         gae = 0
-        future_reward = 0
         value_next = 0
         # init last timestamp if not done
         last_done = self.buffer[-1][6]
         if not last_done:
             # end of buffer is not done state, so we "assume" future values using value model
             next_state = self.buffer[-1][1]
-            value_next = self.policy.get_value(torch.Tensor(next_state).to(DEVICE)).item()
-            future_reward = value_next      # target for critic training. TODO verify if right approach???
+            value_next = self.policy.get_value(torch.Tensor(next_state).to(DEVICE)).item()    
 
         for i in reversed(range(len(self.buffer))): # start reversed
             b = self.buffer[i]
             value, reward, done = b[4], b[5], b[6]
-            if done:  # end of episode
-                # reset
+            if done:  # end of episode -- reset
                 value_next = 0
                 gae = 0
-                future_reward = 0
 
             delta = (reward + DISCOUNT * value_next) - value    # TD error
             gae = delta + (DISCOUNT * GAE_PARAM * gae)  # recursive formula
-            future_reward += reward                    # future rewards for training critic
             gae_buffer.append(gae)
-            future_rewards_buffer.append(future_reward)
             value_next = value
 
         gae_buffer.reverse()
-        future_rewards_buffer.reverse()
-        return gae_buffer, future_rewards_buffer
+        return gae_buffer
 
     def _iter_minibatches(self, dataset, batch_size):
         total_size = dataset["states"].shape[0]
@@ -145,20 +137,16 @@ class PPOAgent:
             yield {key: value[batch_idx] for key, value in dataset.items()}
 
     def _build_dataset(self):
-        advantages, future_rewards = self.compute_gae()
+        advantages = self.compute_gae()
         return {
             "states": torch.tensor(
                 np.array([b[0] for b in self.buffer]), dtype=torch.float32, device=DEVICE
             ),
             "actions": torch.stack([b[2] for b in self.buffer]).to(DEVICE),
             "log_prob": torch.stack([b[3] for b in self.buffer]).to(DEVICE).detach(),
+            "values": torch.stack([b[4] for b in self.buffer]).to(DEVICE).detach(),
             "advantage": torch.tensor(
                 [a.item() if torch.is_tensor(a) else a for a in advantages],
-                dtype=torch.float32,
-                device=DEVICE,
-            ),
-            "future_rewards": torch.tensor(
-                [r.item() if torch.is_tensor(r) else r for r in future_rewards],
                 dtype=torch.float32,
                 device=DEVICE,
             ),
@@ -178,11 +166,18 @@ class PPOAgent:
                 states = batch['states']
                 actions = batch['actions']
                 log_prob_old = batch['log_prob']              # from old policy rollouts
+                values_old = batch['values']
                 future_rewards = batch['future_rewards']
 
                 # on-policy update (sample log_probs, values from latest policy for past actions)
+                # gradients flow through these tensors from new policy
                 log_prob_new = self.policy.get_log_prob(states, actions) # (, 1)
                 values_new = self.policy.get_value(states)  
+                
+                # value target = old baseline + how much was discounted TD error based on rewards
+                # Alternative, sub-optimal way is to use sum actual future rewards, but it has high variance.
+                values_target = values_old + adv     # ** Target for critic model. 
+
                 # PPO
                 ratio = torch.exp(
                     log_prob_new - log_prob_old
@@ -194,7 +189,7 @@ class PPOAgent:
                 # clipped surrogate loss -- PPO loss
                 actor_loss = - torch.min(unclipped, clipped).mean()
                 # MSE
-                critic_loss = torch.square(values_new - future_rewards).mean()
+                critic_loss = torch.square(values_new - values_target).mean()
                 # combined loss to backprop both actor and critic
                 loss = actor_loss + critic_loss 
                 loss.backward()
